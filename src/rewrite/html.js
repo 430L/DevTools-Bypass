@@ -29,7 +29,9 @@ const FETCHING_REL = new Set([
 // generic /api/resource/ requests.
 const RESOURCE_ATTRS = ["src", "poster", "background", "data", "formaction", "cite", "usemap"];
 
-function rewriteHtml(html, target) {
+const MAX_SRCDOC_DEPTH = 3;
+
+function rewriteHtml(html, target, depth = 0) {
   const $ = cheerio.load(html, { decodeEntities: false });
 
   // Strip target-page directives that would break the shell.
@@ -140,7 +142,10 @@ function rewriteHtml(html, target) {
       if (map.imports) rewriteMap(map.imports);
       if (map.scopes) rewriteMap(map.scopes);
       if (map.integrity) map.integrity = {};
-      $(el).text(JSON.stringify(map));
+      // cheerio.text() does NOT encode </script>. A hostile importmap specifier could
+      // otherwise terminate the script tag early — escape the JSON the same way we do
+      // for the boot payload.
+      $(el).text(escapeJsonForScript(JSON.stringify(map)));
     } catch {
       /* leave malformed importmaps alone */
     }
@@ -154,13 +159,16 @@ function rewriteHtml(html, target) {
     if (u) $(el).attr("src", proxyEndpoint(u, "page"));
   });
 
-  // iframe[srcdoc] — recursively rewrite the inlined HTML.
-  $("iframe[srcdoc]").each((_, el) => {
-    const inner = $(el).attr("srcdoc");
-    if (typeof inner === "string" && inner.trim()) {
-      $(el).attr("srcdoc", rewriteHtml(inner, target));
-    }
-  });
+  // iframe[srcdoc] — recursively rewrite the inlined HTML, but cap the depth so
+  // a hostile page cannot craft deeply-nested srcdoc trees that blow the V8 stack.
+  if (depth < MAX_SRCDOC_DEPTH) {
+    $("iframe[srcdoc]").each((_, el) => {
+      const inner = $(el).attr("srcdoc");
+      if (typeof inner === "string" && inner.trim()) {
+        $(el).attr("srcdoc", rewriteHtml(inner, target, depth + 1));
+      }
+    });
+  }
 
   // SRI hashes will not match the modified bytes; drop them.
   $("[integrity]").each((_, el) => $(el).removeAttr("integrity"));

@@ -1,5 +1,16 @@
 "use strict";
 
+// Loud crash guards — never leave Bonto looking at a silent-dead process. A dying
+// worker with no stderr is what turns into a Cloudflare 502 for the user.
+process.on("uncaughtException", (err) => {
+  // eslint-disable-next-line no-console
+  console.error("[InSite] uncaughtException:", err?.stack || err);
+});
+process.on("unhandledRejection", (err) => {
+  // eslint-disable-next-line no-console
+  console.error("[InSite] unhandledRejection:", err?.stack || err);
+});
+
 const http = require("node:http");
 const path = require("node:path");
 const express = require("express");
@@ -14,7 +25,15 @@ const { handleProxy } = require("./proxy/handler");
 const ws = require("./proxy/websocket");
 
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
-const ERUDA_PATH = require.resolve("eruda");
+
+// Prefer the browser UMD bundle explicitly; require.resolve("eruda") would honor `main`
+// which is stable today but not guaranteed across upgrades.
+let ERUDA_PATH;
+try {
+  ERUDA_PATH = require.resolve("eruda/eruda.js");
+} catch {
+  ERUDA_PATH = require.resolve("eruda");
+}
 
 const app = express();
 app.disable("x-powered-by");
@@ -120,11 +139,14 @@ app.use((req, res) => {
   return res.status(404).send("InSite: route not found.");
 });
 
-// Central error handler — no stack trace leaks to clients.
+// Central error handler — no stack trace leaks to clients. Preserves the status set by
+// well-typed errors (express.raw 413 for oversize bodies, body-parser 400s, etc.) so
+// upstream monitoring on Bonto sees the right class of failure.
 app.use((err, _req, res, _next) => {
   logger.error({ err: err.message, stack: err.stack }, "Unhandled error");
   if (res.headersSent) return res.destroy();
-  res.status(500).json({ error: "Internal server error" });
+  const status = Number(err.status || err.statusCode) || 500;
+  res.status(status).json({ error: err.expose ? err.message : "Internal server error" });
 });
 
 const server = http.createServer(app);

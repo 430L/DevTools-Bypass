@@ -46,3 +46,20 @@ test("image-set() forms have their URLs rewritten", () => {
   const count = (out.match(/\/api\/resource\//g) || []).length;
   assert.equal(count, 2);
 });
+
+test("CSS comments are preserved verbatim and their URLs are not rewritten", () => {
+  const src = "/* url(https://leave-me.example.com/x.png) */\na{background:url(/real.png)}";
+  const out = rewriteCss(src, BASE);
+  assert.ok(out.includes("/* url(https://leave-me.example.com/x.png) */"));
+  assert.match(out, /\/api\/resource\/[A-Za-z0-9_-]+/);
+  // Exactly one rewrite, not two.
+  assert.equal((out.match(/\/api\/resource\//g) || []).length, 1);
+});
+
+test("CSS comment containing @import does not chop later declarations", () => {
+  const src = '/* @import "old.css"; */\n@import "new.css";\na{color:red}';
+  const out = rewriteCss(src, BASE);
+  assert.ok(out.includes('/* @import "old.css"; */'));
+  assert.ok(out.includes("a{color:red}"));
+  assert.match(out, /@import "\/api\/resource\/[A-Za-z0-9_-]+"/);
+});

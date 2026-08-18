@@ -7,6 +7,7 @@ const {
   unmapIPv4,
   hostBlockedByName,
   hostInAllowlist,
+  validateTarget,
 } = require("../src/security/ssrf");
 
 test("IPv4 private ranges are blocked", () => {
@@ -69,4 +70,25 @@ test("Internal TLDs blocked by name", () => {
 test("ALLOWED_HOSTS allowlist behaviour", () => {
   // Empty allowlist = any host allowed.
   assert.equal(hostInAllowlist("example.com"), true);
+});
+
+test("validateTarget rejects IPv6-in-URL bracket forms of loopback", async () => {
+  // URL.hostname preserves the brackets and Node normalizes ::ffff:127.0.0.1 to
+  // ::ffff:7f00:1. Both must be blocked before DNS is consulted.
+  const cases = [
+    "http://[::1]/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://[::ffff:7f00:1]/",
+    "http://[::ffff:169.254.169.254]/",
+    "http://[fc00::1]/",
+    "http://[fe80::1]/",
+  ];
+  for (const raw of cases) {
+    await assert.rejects(() => validateTarget(new URL(raw)), /blocked|Private|internal/i);
+  }
+});
+
+test("validateTarget rejects non-HTTP schemes early", async () => {
+  await assert.rejects(() => validateTarget(new URL("javascript:alert(1)")), /HTTP and HTTPS/);
+  await assert.rejects(() => validateTarget(new URL("data:text/plain,foo")), /HTTP and HTTPS/);
 });

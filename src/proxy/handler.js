@@ -17,7 +17,6 @@ const { logger, safeUrl } = require("../logger");
 const config = require("../config");
 
 function extractEncoded(originalUrl, prefix) {
-  // originalUrl always begins with the mounted prefix in Express 5's use-router.
   const path = originalUrl.split("?", 1)[0];
   return path.startsWith(prefix) ? path.slice(prefix.length) : "";
 }
@@ -54,74 +53,109 @@ async function handleProxy(req, res, kind) {
 
   const sid = readSessionId(req);
 
-  let upstream;
+  let fetched;
   try {
-    upstream = await fetchUpstream({
+    fetched = await fetchUpstream({
       target,
       req,
       sid,
-      body: Buffer.isBuffer(req.body) ? req.body : null,
+      body: Buffer.isBuffer(req.body) && req.body.length ? req.body : null,
     });
   } catch (err) {
     return sendUpstreamError(res, target, err);
   }
 
-  // Store any Set-Cookie into the per-session jar; never re-emit to the browser.
-  const setCookies = extractSetCookies(upstream.headers);
-  if (setCookies.length) {
-    try {
-      await storeSetCookies(sid, target, setCookies);
-    } catch {
-      /* jar issues are non-fatal */
-    }
-  }
+  const { response: upstream, cleanup } = fetched;
 
-  if (handleRedirect(upstream, target, res)) return;
-
-  const contentType = upstream.headers.get("content-type") || "";
-  const responseHeaders = Object.fromEntries(upstream.headers.entries());
-  // Only forward upstream cache metadata for subresources — the shell HTML must not be cached
-  // because it embeds a session-bound boot script.
-  copyResponseHeaders(responseHeaders, res, { forwardCache: kind === "resource" });
-  if (kind === "page") res.setHeader("cache-control", "no-store");
-
-  const rewriteMode = needsRewrite(kind, contentType, target.pathname);
-  const bodyStream = Readable.fromWeb(upstream.body);
-
-  if (rewriteMode) {
-    // Text bodies need to be fully materialized before we can rewrite them.
-    let buf;
-    try {
-      buf = await collectBounded(bodyStream, config.MAX_RESPONSE_BYTES);
-    } catch (err) {
-      return sendUpstreamError(res, target, err);
-    }
-    const text = buf.toString("utf8");
-    let out = text;
-    if (rewriteMode === "html") {
-      out = rewriteHtml(text, target);
-      res.type("html");
-    } else if (rewriteMode === "css") {
-      out = rewriteCss(text, target.href);
-      res.type("css");
-    } else if (rewriteMode === "js") {
-      out = rewriteJs(text, target.href);
-      res.type("application/javascript");
-    }
-    return res.status(upstream.status).send(out);
-  }
-
-  // Binary/opaque body → stream through the size limiter.
-  res.status(upstream.status);
   try {
-    await pipeline(bodyStream, limitedTransform(config.MAX_RESPONSE_BYTES), res);
-  } catch (err) {
-    if (err instanceof BodySizeLimitError && !res.headersSent) {
-      return res.status(413).send("Upstream response exceeds configured size.");
+    // Store any Set-Cookie into the per-session jar; never re-emit to the browser.
+    const setCookies = extractSetCookies(upstream.headers);
+    if (setCookies.length) {
+      try {
+        await storeSetCookies(sid, target, setCookies);
+      } catch {
+        /* jar issues are non-fatal */
+      }
     }
-    if (!res.headersSent) return sendUpstreamError(res, target, err);
-    logger.warn({ target: safeUrl(target), err: err?.message }, "Streaming aborted mid-response");
-    res.destroy();
+
+    if (handleRedirect(upstream, target, res, kind)) {
+      // We are not going to read the body — cancel it so undici releases the socket
+      // back to the shared Agent pool immediately rather than keeping the request
+      // in-flight until the abort timer fires.
+      try {
+        upstream.body?.cancel();
+      } catch {
+        /* noop */
+      }
+      return;
+    }
+
+    const contentType = upstream.headers.get("content-type") || "";
+    const responseHeaders = Object.fromEntries(upstream.headers.entries());
+    copyResponseHeaders(responseHeaders, res, { forwardCache: kind === "resource" });
+    if (kind === "page") res.setHeader("cache-control", "no-store");
+
+    // 204/304/HEAD responses carry no body — send status and stop.
+    if (
+      upstream.body == null ||
+      upstream.status === 204 ||
+      upstream.status === 304 ||
+      req.method === "HEAD"
+    ) {
+      try {
+        upstream.body?.cancel();
+      } catch {
+        /* noop */
+      }
+      return res.status(upstream.status).end();
+    }
+
+    const rewriteMode = needsRewrite(kind, contentType, target.pathname);
+    const bodyStream = Readable.fromWeb(upstream.body);
+
+    if (rewriteMode) {
+      let buf;
+      try {
+        buf = await collectBounded(bodyStream, config.MAX_RESPONSE_BYTES);
+      } catch (err) {
+        return sendUpstreamError(res, target, err);
+      }
+      const text = buf.toString("utf8");
+      let out = text;
+      if (rewriteMode === "html") {
+        out = rewriteHtml(text, target);
+        res.type("html");
+      } else if (rewriteMode === "css") {
+        out = rewriteCss(text, target.href);
+        res.type("css");
+      } else if (rewriteMode === "js") {
+        try {
+          out = rewriteJs(text, target.href);
+        } catch (err) {
+          logger.warn(
+            { target: safeUrl(target), err: err?.message },
+            "JS rewrite failed; passing through",
+          );
+          out = text;
+        }
+        res.type("application/javascript");
+      }
+      return res.status(upstream.status).send(out);
+    }
+
+    res.status(upstream.status);
+    try {
+      await pipeline(bodyStream, limitedTransform(config.MAX_RESPONSE_BYTES), res);
+    } catch (err) {
+      if (err instanceof BodySizeLimitError && !res.headersSent) {
+        return res.status(413).send("Upstream response exceeds configured size.");
+      }
+      if (!res.headersSent) return sendUpstreamError(res, target, err);
+      logger.warn({ target: safeUrl(target), err: err?.message }, "Streaming aborted mid-response");
+      res.destroy();
+    }
+  } finally {
+    cleanup();
   }
 }
 
