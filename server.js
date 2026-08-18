@@ -244,6 +244,7 @@ function rateLimit(req,res,next) {
 
 app.get("/healthz", (_req,res)=>res.json({ok:true,node:process.version,eruda:ERUDA_VERSION}));
 app.get("/vendor/eruda.js", (_req,res)=>res.type("application/javascript").sendFile(ERUDA_PATH));
+app.get("/", (_req,res)=>res.sendFile(path.join(__dirname,"public","index.html")));
 
 app.get("/auth/status",(req,res)=>res.json({
   required: !!ACCESS_PASSWORD,
@@ -261,43 +262,51 @@ app.post("/auth/login",(req,res)=>{
 });
 app.post("/auth/logout",(req,res)=>{res.clearCookie("insite_session",{path:"/"});res.json({ok:true});});
 
-app.use("/api", rateLimit, async (req,res,next)=>{
+async function handleProxy(req, res, kind) {
   if (ACCESS_PASSWORD && !isAuthed(req)) return res.status(401).json({error:"Authentication required."});
 
-  const m=req.path.match(/^\/(page|resource)\/([^/]+)$/);
-  if(!m) return next();
+  // URL-safe base64 is deliberately accepted as a single path segment.
+  const prefix = `/api/${kind}/`;
+  let encoded = req.originalUrl.split("?",1)[0].slice(prefix.length);
+  if (!encoded) return res.status(400).json({error:"Missing encoded target URL."});
 
   let target;
-  try { target=new URL(decodeTarget(m[2])); }
-  catch { return res.status(400).json({error:"Invalid target encoding."}); }
+  try {
+    target = new URL(decodeTarget(encoded));
+  } catch {
+    return res.status(400).json({error:"Invalid target encoding."});
+  }
 
   try {
-    const upstream=await fetchUpstream(target, req);
-    if([301,302,303,307,308].includes(upstream.status)){
-      const loc=upstream.headers.get("location");
-      if(!loc) return res.status(upstream.status).end();
-      const resolved=cleanTarget(loc,target.href);
-      if(!resolved) return res.status(502).json({error:"Upstream redirect target is not HTTP(S)."});
-      const html = `<script>window.parent.postMessage(${JSON.stringify({type:"insite:navigate",url:resolved.href})},"*")</script>`;
-      return res.status(200).type("html").send(html);
+    const upstream = await fetchUpstream(target, req);
+    const status = upstream.status;
+
+    if ([301,302,303,307,308].includes(status)) {
+      const loc = upstream.headers.get("location");
+      if (!loc) return res.status(status).end();
+      const resolved = cleanTarget(loc, target.href);
+      if (!resolved) return res.status(502).json({error:"Upstream redirect target is not HTTP(S)."});
+      return res.status(200).type("html").send(
+        `<script>window.parent.postMessage(${JSON.stringify({type:"insite:navigate",url:resolved.href})},"*")</script>`
+      );
     }
 
-    const buf=Buffer.from(await upstream.arrayBuffer());
-    if(buf.length>MAX_RESPONSE_BYTES) return res.status(413).send("Upstream response exceeds configured size.");
-    const type=upstream.headers.get("content-type") || "";
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    if (buf.length > MAX_RESPONSE_BYTES)
+      return res.status(413).send("Upstream response exceeds configured size.");
+
+    const type = upstream.headers.get("content-type") || "";
     passHeaders(upstream,res);
     res.setHeader("cache-control","no-store");
     res.setHeader("x-insite-target",target.href);
 
-    if(m[1]==="page" || type.includes("text/html")){
-      const html=rewriteHtml(buf.toString("utf8"),target);
-      return res.type("html").send(html);
+    if (kind==="page" || type.includes("text/html")) {
+      return res.status(status).type("html").send(rewriteHtml(buf.toString("utf8"),target));
     }
-    if(type.includes("text/css") || /\.css(?:$|\?)/i.test(target.pathname)){
-      return res.type("css").send(rewriteCss(buf.toString("utf8"),target.href));
+    if (type.includes("text/css") || /\.css(?:$|\?)/i.test(target.pathname)) {
+      return res.status(status).type("css").send(rewriteCss(buf.toString("utf8"),target.href));
     }
-    if(type.includes("javascript") || type.includes("ecmascript") || /\.(?:m?js)(?:$|\?)/i.test(target.pathname)){
-      // Best-effort module/import rewrite for common static imports.
+    if (type.includes("javascript") || type.includes("ecmascript") || /\.(?:m?js)(?:$|\?)/i.test(target.pathname)) {
       let js=buf.toString("utf8");
       js=js.replace(/(\b(?:from|import)\s*["'])([^"']+)(["'])/g,(all,a,b,c)=>{
         const u=cleanTarget(b,target.href); return u ? a+proxyEndpoint(u,"resource")+c : all;
@@ -305,25 +314,31 @@ app.use("/api", rateLimit, async (req,res,next)=>{
       js=js.replace(/(\bimport\s*\(\s*["'])([^"']+)(["']\s*\))/g,(all,a,b,c)=>{
         const u=cleanTarget(b,target.href); return u ? a+proxyEndpoint(u,"resource")+c : all;
       });
-      return res.type("application/javascript").send(js);
+      return res.status(status).type("application/javascript").send(js);
     }
-    return res.end(buf);
-  } catch (e) {
+    return res.status(status).end(buf);
+  } catch(e) {
     const message=e.name==="AbortError" ? "Upstream request timed out." : e.message;
     console.error(`[InSite] ${req.method} ${target?.href||"?"}: ${message}`);
-    res.status(502).type("html").send(
+    return res.status(502).type("html").send(
       `<!doctype html><meta charset="utf-8"><title>InSite Proxy Error</title>`+
-      `<style>body{font:15px system-ui;background:#0b1020;color:#e5e7eb;padding:30px}`+
-      `pre{white-space:pre-wrap;background:#111827;padding:14px;border:1px solid #334155;border-radius:8px}`+
-      `a{color:#60a5fa}</style><h1>InSite Proxy Error</h1>`+
-      `<p>Target: ${escapeHtml(target?.href||"unknown")}</p><pre>${escapeHtml(message)}</pre>`+
-      `<p><a href="/">Return to InSite</a></p>`
+      `<style>body{font:15px system-ui;background:#0b1020;color:#e5e7eb;padding:30px}pre{white-space:pre-wrap;background:#111827;padding:14px;border:1px solid #334155;border-radius:8px}a{color:#60a5fa}</style>`+
+      `<h1>InSite Proxy Error</h1><p>Target: ${escapeHtml(target?.href||"unknown")}</p><pre>${escapeHtml(message)}</pre><p><a href="/">Return to InSite</a></p>`
     );
   }
-});
+}
+
+// Use prefix middleware rather than wildcard/parameter route matching.
+// Express 4/5 and Bonto reverse proxies all preserve these prefixes.
+app.use("/api/page", rateLimit, (req,res) => handleProxy(req,res,"page"));
+app.use("/api/resource", rateLimit, (req,res) => handleProxy(req,res,"resource"));
 
 app.use(express.static(path.join(__dirname,"public"),{extensions:["html"]}));
-app.use((req,res)=>res.status(404).send("InSite: route not found."));
+app.use((req,res,next)=>{
+  if (req.path.startsWith("/api/")) return res.status(404).json({error:"InSite API route not found.",path:req.path});
+  if (req.method==="GET" || req.method==="HEAD") return res.sendFile(path.join(__dirname,"public","index.html"));
+  return res.status(404).send("InSite: route not found.");
+});
 app.use((err,_req,res,_next)=>{console.error(err);res.status(500).json({error:"Internal server error"});});
 
 app.listen(PORT,()=>console.log(`InSite listening on ${PORT}; Eruda ${ERUDA_VERSION}`));

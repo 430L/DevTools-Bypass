@@ -1,4 +1,4 @@
-# InSite DevTools 2.0 — Bonto deployment
+# InSite DevTools 3.0 — Bonto deployment
 
 This version removes the fragile `/p/<target>` iframe architecture from the previous build.
 
@@ -63,3 +63,17 @@ Health check:
 Some modern applications cannot be perfectly proxied because they depend on original-origin semantics, service workers, WebAuthn, OAuth, certificate-bound authentication, signed requests, strict origin checks, or browser-level features. This project does not bypass those security mechanisms.
 
 It is intended for legitimate debugging of sites you are authorized to inspect.
+
+
+## V3 routing fix
+
+The previous deployment depended on Express wildcard route matching. V3 uses explicit prefix middleware:
+
+- `/api/page/<base64url>`
+- `/api/resource/<base64url>`
+
+The frontend also sends the URL-safe Base64 token directly without URI-encoding it a second time.
+
+The frontend root is explicitly handled before the static/404 fallback, and GET/HEAD unknown non-API paths return `public/index.html`, preventing a Bonto reverse-proxy path from displaying a backend 404 page.
+
+A **Health** button in the top bar calls `/healthz` so you can immediately verify that the Bonto process is running and see its Node/Eruda versions.

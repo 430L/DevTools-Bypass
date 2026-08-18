@@ -15,7 +15,7 @@
     <input id="url" autocomplete="off" spellcheck="false" placeholder="https://example.com">
     <button class="go" type="submit">Go</button>
   </form>
-  <div class="top-actions"><button id="newTab">Open tab</button><button id="logout" class="hide">Log out</button></div>
+  <div class="top-actions"><button id="newTab">Open tab</button><button id="health">Health</button><button id="logout" class="hide">Log out</button></div>
 </header>
 
 <main class="workspace">
@@ -61,7 +61,7 @@
   <div class="modal-card">
     <h1>InSite DevTools</h1><p>This deployment is password protected.</p>
     <form id="loginForm"><input id="password" type="password" placeholder="Access password" autofocus><button class="go">Sign in</button></form>
-    <div id="loginError" class="error"></div>
+    <div id="loginError" class="error"></div><pre id="healthOut" style="display:none"></pre>
   </div>
 </div>
 <script src="/app.js"></script>

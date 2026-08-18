@@ -11,7 +11,7 @@
     try { const u=new URL(v); return ["http:","https:"].includes(u.protocol) ? u.href : ""; }
     catch { return ""; }
   }
-  function pageUrl(url){ return `/api/page/${encodeURIComponent(b64url(url))}`; }
+  function pageUrl(url){ return `/api/page/${b64url(url)}`; }
   function b64url(s){ return btoa(unescape(encodeURIComponent(s))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
   function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 
@@ -59,6 +59,19 @@
   $("reload").onclick=()=>state.current&&navigate(state.current,false);
   $("newTab").onclick=()=>window.open(state.current||"https://example.com","_blank","noopener,noreferrer");
   $("logout").onclick=async()=>{await fetch("/auth/logout",{method:"POST"});location.reload();};
+
+  $("health").onclick=async()=>{
+    try{
+      const r=await fetch("/healthz",{cache:"no-store"});
+      const j=await r.json();
+      $("healthOut").style.display="block";
+      $("healthOut").textContent=JSON.stringify(j,null,2);
+    }catch(e){
+      $("healthOut").style.display="block";
+      $("healthOut").textContent="Health check failed: "+e;
+    }
+  };
+
 
   $("fab").onclick=()=>{$("drawer").classList.toggle("open");};
   $("closeDrawer").onclick=()=>{$("drawer").classList.remove("open");};
