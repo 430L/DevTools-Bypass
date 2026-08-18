@@ -139,15 +139,51 @@ async function validateTarget(u) {
   return { host, pinned };
 }
 
-// Build an undici agent that redirects the DNS resolution to a pre-verified IP so
-// that a rebinding attack cannot present a different address between validate and connect.
+// Build an undici agent that redirects the DNS resolution to a pre-verified IP so that
+// a rebinding attack cannot present a different address between validate and connect.
+//
+// Agents are cached per (family:address) so a page with many subresources doing the same
+// TLS handshake N times becomes N requests reusing a single pool. Idle eviction happens
+// on a periodic sweep so we do not leak agents for one-shot destinations.
+const AGENT_CACHE_MAX = 128;
+const AGENT_IDLE_MS = 5 * 60 * 1000;
+const agentCache = new Map(); // key → { agent, lastUsed }
+const AGENT_SWEEP_MS = 60 * 1000;
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of agentCache) {
+    if (now - entry.lastUsed > AGENT_IDLE_MS) {
+      agentCache.delete(key);
+      entry.agent.close().catch(() => entry.agent.destroy().catch(() => {}));
+    }
+  }
+}, AGENT_SWEEP_MS).unref();
+
 function pinnedAgent(pinned) {
-  const address = pinned[0].address;
-  return new Agent({
+  const { address, family } = pinned[0];
+  const key = `${family}:${address}`;
+  const cached = agentCache.get(key);
+  if (cached) {
+    cached.lastUsed = Date.now();
+    return cached.agent;
+  }
+  const agent = new Agent({
     connect: {
-      lookup: (_hostname, _opts, cb) => cb(null, address, pinned[0].family),
+      lookup: (_hostname, _opts, cb) => cb(null, address, family),
     },
+    keepAliveTimeout: 30_000,
+    keepAliveMaxTimeout: 60_000,
   });
+  // Simple LRU-ish cap: evict the oldest entry when full.
+  if (agentCache.size >= AGENT_CACHE_MAX) {
+    const oldestKey = agentCache.keys().next().value;
+    const oldest = agentCache.get(oldestKey);
+    agentCache.delete(oldestKey);
+    oldest.agent.close().catch(() => oldest.agent.destroy().catch(() => {}));
+  }
+  agentCache.set(key, { agent, lastUsed: Date.now() });
+  return agent;
 }
 
 module.exports = {

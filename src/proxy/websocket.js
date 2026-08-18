@@ -54,6 +54,14 @@ function bridge(req, client, target) {
     return;
   }
   activeBySession.set(sid, bucket + 1);
+  let released = false;
+  const releaseBucket = () => {
+    if (released) return;
+    released = true;
+    const left = (activeBySession.get(sid) || 1) - 1;
+    if (left <= 0) activeBySession.delete(sid);
+    else activeBySession.set(sid, left);
+  };
 
   const headers = { ...req.headers };
   delete headers.host;
@@ -65,16 +73,29 @@ function bridge(req, client, target) {
   delete headers["sec-websocket-version"];
   delete headers["sec-websocket-extensions"];
 
-  const upstream = new WebSocket(target.href, {
-    headers,
-    perMessageDeflate: false,
-    handshakeTimeout: config.REQUEST_TIMEOUT_MS,
-  });
+  // ws.WebSocket can throw synchronously on bad URLs / invalid option shapes. Without
+  // the try/catch below the bucket counter would leak until process restart, and 32
+  // failed connections would permanently lock the session out.
+  let upstream;
+  try {
+    upstream = new WebSocket(target.href, {
+      headers,
+      perMessageDeflate: false,
+      handshakeTimeout: config.REQUEST_TIMEOUT_MS,
+    });
+  } catch (err) {
+    releaseBucket();
+    logger.warn({ err: err.message, target: safeUrl(target) }, "WS constructor threw");
+    try {
+      client.close(1011, "Upstream construction failed");
+    } catch {
+      /* noop */
+    }
+    return;
+  }
 
   const close = () => {
-    const left = (activeBySession.get(sid) || 1) - 1;
-    if (left <= 0) activeBySession.delete(sid);
-    else activeBySession.set(sid, left);
+    releaseBucket();
     try {
       client.close();
     } catch {

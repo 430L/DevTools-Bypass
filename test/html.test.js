@@ -115,3 +115,23 @@ test("Boot script escapes </ sequences in the JSON payload", () => {
   const injected = out.slice(firstScript, scriptTail);
   assert.equal(/<\/script/i.test(injected.replace(/\\u003c\/script/i, "")), false);
 });
+
+test("iframe[srcdoc] recursion is depth-capped (no stack overflow on nested payload)", () => {
+  // Build a 20-deep nested srcdoc HTML that would otherwise recurse indefinitely.
+  let inner = "<html><body>leaf</body></html>";
+  for (let i = 0; i < 20; i++) {
+    inner = `<iframe srcdoc='${inner.replace(/'/g, "&#39;")}'></iframe>`;
+  }
+  // Must complete without a RangeError.
+  const out = rewriteHtml(inner, TARGET);
+  assert.ok(out.includes("iframe"));
+});
+
+test("importmap JSON is </script>-escaped", () => {
+  const html = `<script type="importmap">{"imports":{"a":"https://x/</script><script>alert(1)</script>"}}</script>`;
+  const out = rewriteHtml(html, TARGET);
+  const scriptTag = out.match(/<script[^>]*importmap[^>]*>([\s\S]*?)<\/script>/i);
+  assert.ok(scriptTag, "importmap script tag must remain");
+  // The unescaped </script> substring must not appear inside the importmap payload.
+  assert.equal(/<\/script>/i.test(scriptTag[1]), false);
+});

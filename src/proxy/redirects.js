@@ -6,8 +6,11 @@ const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
 // If the upstream returned a 3xx redirect, rewrite its Location to point at the proxy
 // (so the browser fetches the next hop through us) and forward the same status verbatim.
+// `kind` must be "page" or "resource" so an image / stylesheet / script redirect stays on
+// the resource path — otherwise a 302 from an image CDN would land the browser on
+// /api/page/&lt;enc&gt; and get HTML-rewritten into the JPEG slot.
 // Returns true if handled, false otherwise.
-function handleRedirect(upstream, target, res) {
+function handleRedirect(upstream, target, res, kind = "page") {
   if (!REDIRECT_CODES.has(upstream.status)) return false;
   const loc = upstream.headers.get("location");
   if (!loc) {
@@ -19,7 +22,7 @@ function handleRedirect(upstream, target, res) {
     res.status(502).json({ error: "Upstream redirect target is not HTTP(S)." });
     return true;
   }
-  res.setHeader("Location", proxyEndpoint(resolved, "page"));
+  res.setHeader("Location", proxyEndpoint(resolved, kind));
   res.status(upstream.status).end();
   return true;
 }

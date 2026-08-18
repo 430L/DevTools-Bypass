@@ -77,3 +77,18 @@ test("Non-3xx response is left alone", () => {
   const handled = handleRedirect({ status: 200, headers: { get: () => null } }, TARGET, res);
   assert.equal(handled, false);
 });
+
+test("resource redirects rewrite to /api/resource/, not /api/page/", () => {
+  // Regression: a 302 from an image CDN must not turn the browser onto the HTML pipeline
+  // (which would inject Eruda into the JPEG slot).
+  const res = mockRes();
+  handleRedirect(mockUpstream(302, "https://cdn.example.com/x.jpg"), TARGET, res, "resource");
+  const { headers } = res._get();
+  assert.match(headers.Location, /^\/api\/resource\/[A-Za-z0-9_-]+$/);
+});
+
+test("page redirects still use /api/page/ when kind is omitted", () => {
+  const res = mockRes();
+  handleRedirect(mockUpstream(302, "https://example.com/next"), TARGET, res);
+  assert.match(res._get().headers.Location, /^\/api\/page\/[A-Za-z0-9_-]+$/);
+});

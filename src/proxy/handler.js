@@ -78,7 +78,17 @@ async function handleProxy(req, res, kind) {
       }
     }
 
-    if (handleRedirect(upstream, target, res)) return;
+    if (handleRedirect(upstream, target, res, kind)) {
+      // We are not going to read the body — cancel it so undici releases the socket
+      // back to the shared Agent pool immediately rather than keeping the request
+      // in-flight until the abort timer fires.
+      try {
+        upstream.body?.cancel();
+      } catch {
+        /* noop */
+      }
+      return;
+    }
 
     const contentType = upstream.headers.get("content-type") || "";
     const responseHeaders = Object.fromEntries(upstream.headers.entries());
@@ -92,6 +102,11 @@ async function handleProxy(req, res, kind) {
       upstream.status === 304 ||
       req.method === "HEAD"
     ) {
+      try {
+        upstream.body?.cancel();
+      } catch {
+        /* noop */
+      }
       return res.status(upstream.status).end();
     }
 

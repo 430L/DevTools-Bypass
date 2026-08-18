@@ -14,19 +14,30 @@ function rewriteCss(css, base) {
   const n = css.length;
 
   while (i < n) {
-    // Fast path: consume until the next `url(` or `@import`.
+    // Search for the next `url(`, `@import`, OR the next `/*` — whichever comes first.
+    // Comments must be preserved verbatim so a commented-out `url(x)` or `@import "y"`
+    // is not rewritten and a `;` inside the comment does not chop a later @import.
     const nextUrl = css.indexOf("url(", i);
     const nextImport = css.indexOf("@import", i);
+    const nextComment = css.indexOf("/*", i);
     let next = -1;
-    if (nextUrl === -1 && nextImport === -1) {
+    for (const cand of [nextUrl, nextImport, nextComment]) {
+      if (cand !== -1 && (next === -1 || cand < next)) next = cand;
+    }
+    if (next === -1) {
       out += css.slice(i);
       break;
     }
-    if (nextUrl === -1) next = nextImport;
-    else if (nextImport === -1) next = nextUrl;
-    else next = Math.min(nextUrl, nextImport);
 
     out += css.slice(i, next);
+
+    if (next === nextComment) {
+      const end = css.indexOf("*/", next + 2);
+      const stop = end === -1 ? n : end + 2;
+      out += css.slice(next, stop);
+      i = stop;
+      continue;
+    }
 
     if (next === nextUrl) {
       const parsed = readUrlFunction(css, next);

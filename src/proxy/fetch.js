@@ -10,9 +10,11 @@ const config = require("../config");
 const defaultAgent = new Agent();
 
 // Perform the upstream fetch. `body` is a Buffer or null; content-type is preserved by
-// the copied request headers. Returns { response, cleanup } — cleanup MUST be called by
-// the caller once the response body has been consumed / piped, so the pinned Agent's
-// socket pool is released instead of leaking.
+// the copied request headers.
+//
+// Returns { response, cleanup }. cleanup MUST be called by the caller once the response
+// body has been consumed / piped / cancelled — it clears the abort timer. The undici Agent
+// itself is a shared cache entry (ssrf.pinnedAgent) so we never close it per-request.
 async function fetchUpstream({ target, req, sid, body }) {
   const { pinned } = await validateTarget(target);
   const dispatcher = pinnedAgent(pinned);
@@ -22,12 +24,7 @@ async function fetchUpstream({ target, req, sid, body }) {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.REQUEST_TIMEOUT_MS);
-
-  const cleanup = () => {
-    clearTimeout(timer);
-    // Best-effort agent teardown; ignore errors.
-    dispatcher.close().catch(() => dispatcher.destroy().catch(() => {}));
-  };
+  const cleanup = () => clearTimeout(timer);
 
   try {
     const init = {

@@ -1,11 +1,13 @@
 "use strict";
 
-const setCookieParser = require("set-cookie-parser");
-const { CookieJar, Cookie } = require("tough-cookie");
+const { CookieJar } = require("tough-cookie");
+const { getDomain } = require("tldts");
 
-// Per-session per-target cookie jars.
-//   session id → target origin → tough-cookie CookieJar
-// Isolates target sessions from the browser AND from other proxy users.
+// Per-session cookie jars keyed by eTLD+1 so that Domain=.example.com cookies set at
+// www.example.com are still offered when the same session visits accounts.example.com.
+// Falls back to the raw hostname when tldts cannot classify the host (bare hostname,
+// IP literal, etc.), keeping the strict-scoping behaviour for those cases.
+//   sid → jarKey → { jar, lastUsed }
 const jars = new Map();
 const SWEEP_MS = 10 * 60 * 1000;
 const IDLE_MS = 2 * 60 * 60 * 1000;
@@ -13,27 +15,32 @@ const IDLE_MS = 2 * 60 * 60 * 1000;
 setInterval(() => {
   const now = Date.now();
   for (const [sid, per] of jars) {
-    for (const [origin, entry] of per) {
-      if (now - entry.lastUsed > IDLE_MS) per.delete(origin);
+    for (const [key, entry] of per) {
+      if (now - entry.lastUsed > IDLE_MS) per.delete(key);
     }
     if (per.size === 0) jars.delete(sid);
   }
 }, SWEEP_MS).unref();
 
-function jarFor(sid, origin) {
+function jarKey(hostname) {
+  return getDomain(hostname, { allowPrivateDomains: true }) || hostname;
+}
+
+function jarFor(sid, hostname) {
   if (!sid) return null;
+  const key = jarKey(hostname);
   let per = jars.get(sid);
   if (!per) {
     per = new Map();
     jars.set(sid, per);
   }
-  let entry = per.get(origin);
+  let entry = per.get(key);
   if (!entry) {
     entry = {
       jar: new CookieJar(undefined, { rejectPublicSuffixes: false }),
       lastUsed: Date.now(),
     };
-    per.set(origin, entry);
+    per.set(key, entry);
   }
   entry.lastUsed = Date.now();
   return entry.jar;
@@ -44,31 +51,20 @@ function dropSession(sid) {
 }
 
 async function getCookieHeader(sid, target) {
-  const jar = jarFor(sid, target.origin);
+  const jar = jarFor(sid, target.hostname);
   if (!jar) return "";
   return jar.getCookieString(target.href);
 }
 
-// Store upstream Set-Cookie headers in the jar. Never emitted back to the client.
+// Store upstream Set-Cookie headers verbatim. Handing tough-cookie the raw header line
+// preserves Domain, Path, Secure, SameSite, HttpOnly, Max-Age, Expires without our own
+// (previously lossy) reconstruction, so cross-subdomain SSO cookies survive.
 async function storeSetCookies(sid, target, headerLines) {
-  const jar = jarFor(sid, target.origin);
+  const jar = jarFor(sid, target.hostname);
   if (!jar || !headerLines?.length) return;
-  const parsed = setCookieParser.parse(headerLines, { decodeValues: false });
-  for (const c of parsed) {
-    const attrs = [
-      `${c.name}=${c.value}`,
-      c.expires ? `Expires=${new Date(c.expires).toUTCString()}` : "",
-      c.maxAge != null ? `Max-Age=${c.maxAge}` : "",
-      c.path ? `Path=${c.path}` : "Path=/",
-      c.httpOnly ? "HttpOnly" : "",
-      c.sameSite ? `SameSite=${c.sameSite}` : "",
-    ]
-      .filter(Boolean)
-      .join("; ");
-    const cookie = Cookie.parse(attrs);
-    if (!cookie) continue;
+  for (const line of headerLines) {
     try {
-      await jar.setCookie(cookie, target.href, { ignoreError: true });
+      await jar.setCookie(line, target.href, { ignoreError: true, http: true });
     } catch {
       /* ignore malformed */
     }
@@ -86,4 +82,11 @@ function extractSetCookies(headers) {
   return out;
 }
 
-module.exports = { jarFor, dropSession, getCookieHeader, storeSetCookies, extractSetCookies };
+module.exports = {
+  jarFor,
+  jarKey,
+  dropSession,
+  getCookieHeader,
+  storeSetCookies,
+  extractSetCookies,
+};
