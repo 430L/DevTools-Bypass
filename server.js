@@ -184,17 +184,22 @@ app.post('/auth/login', (req,res) => {
 });
 app.post('/auth/logout', (req,res) => { res.clearCookie('insite_session', {path:'/'}); res.json({ok:true}); });
 
-app.all('/p/:key/*splat', rateLimit, async (req,res) => {
-  if (ACCESS_PASSWORD && !isAuthed(req)) return res.status(401).json({error:'Authentication required.'});
+app.use('/p', rateLimit, async (req, res) => {
+  if (ACCESS_PASSWORD && !isAuthed(req)) {
+    return res.status(401).send(`<!doctype html><meta charset="utf-8"><title>InSite Authentication Required</title><style>body{font-family:system-ui;background:#0b1020;color:#e5e7eb;padding:40px}a{color:#60a5fa}</style><h1>Authentication required</h1><p>Return to <a href="/">InSite</a> and sign in.</p>`);
+  }
+
+  const requestPath = req.path || '';
+  const match = requestPath.match(/^\/([^/]+)(?:\/(.*))?$/);
+  if (!match) return res.status(400).send('Bad proxy path. Expected /p/<target-key>/<path>.');
 
   let origin;
-  try { origin = fromB64url(req.params.key); } catch { return res.status(400).send('Bad target key.'); }
+  try { origin = fromB64url(match[1]); } catch { return res.status(400).send('Bad target key.'); }
   let base;
   try { base = new URL(origin); } catch { return res.status(400).send('Bad target origin.'); }
   if (!/^https?:$/.test(base.protocol)) return res.status(400).send('Bad target protocol.');
 
-  const rawSplat = req.params.splat || '';
-  const splat = Array.isArray(rawSplat) ? rawSplat.join('/') : rawSplat;
+  const splat = match[2] || '';
   const target = new URL('/' + splat, base);
   for (const [k,v] of Object.entries(req.query)) {
     if (k === '__insite') continue;
@@ -202,7 +207,10 @@ app.all('/p/:key/*splat', rateLimit, async (req,res) => {
     else target.searchParams.set(k,String(v));
   }
 
-  try { await validateTarget(target); } catch (e) { return res.status(403).send(`<h1>Blocked target</h1><p>${escapeHtml(e.message)}</p>`); }
+  try { await validateTarget(target); }
+  catch (e) {
+    return res.status(403).send(`<h1>Blocked target</h1><p>${escapeHtml(e.message)}</p>`);
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -221,13 +229,16 @@ app.all('/p/:key/*splat', rateLimit, async (req,res) => {
     });
     headers['cache-control'] = 'no-store';
     headers['x-insite-target'] = target.href;
-    if (upstream.headers.get('set-cookie')) headers['set-cookie'] = rewriteSetCookies(upstream.headers.getSetCookie ? upstream.headers.getSetCookie() : [upstream.headers.get('set-cookie')], req.params.key);
+    const setCookies = upstream.headers.getSetCookie ? upstream.headers.getSetCookie() : (upstream.headers.get('set-cookie') ? [upstream.headers.get('set-cookie')] : []);
+    if (setCookies.length) headers['set-cookie'] = rewriteSetCookies(setCookies, match[1]);
 
     if ([301,302,303,307,308].includes(upstream.status)) {
       const loc = upstream.headers.get('location');
       if (loc) {
-        const resolved = new URL(loc, target.href);
-        headers.location = proxiedUrl(resolved) + (resolved.hash || '');
+        try {
+          const resolved = new URL(loc, target.href);
+          headers.location = proxiedUrl(resolved) + (resolved.hash || '');
+        } catch {}
       }
     }
 
@@ -248,7 +259,8 @@ app.all('/p/:key/*splat', rateLimit, async (req,res) => {
   } catch (err) {
     clearTimeout(timer);
     const msg = err.name === 'AbortError' ? 'Upstream request timed out.' : `Proxy error: ${err.message}`;
-    return res.status(502).send(`<h1>InSite proxy error</h1><pre>${escapeHtml(msg)}</pre>`);
+    console.error(`[InSite proxy] ${req.method} ${target?.href || 'unknown'} -> ${msg}`);
+    return res.status(502).send(`<!doctype html><meta charset="utf-8"><title>InSite Proxy Error</title><style>body{font-family:system-ui;background:#0b1020;color:#e5e7eb;padding:40px}pre{white-space:pre-wrap;background:#111827;padding:16px;border-radius:8px;border:1px solid #334155}.back{color:#60a5fa}</style><h1>InSite proxy error</h1><p>InSite could not fetch the requested page.</p><pre>${escapeHtml(msg)}</pre><a class="back" href="/">Return to InSite</a>`);
   }
 });
 
