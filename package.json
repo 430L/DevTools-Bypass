@@ -1,14 +1,10 @@
 {
-  "name": "insite-devtools-proxy",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Self-hosted development proxy with Eruda injection and an InSite DevTools frontend.",
-  "license": "MIT",
-  "engines": { "node": ">=20 <23" },
-  "scripts": { "start": "node server.js", "check": "node --check server.js && node --check public/app.js && node --check public/insite.js" },
-  "dependencies": {
-    "cheerio": "1.2.0",
-    "eruda": "3.4.3",
-    "express": "5.2.1"
-  }
+  "name":"insite-devtools-proxy",
+  "version":"2.0.0",
+  "private":true,
+  "description":"Same-origin development proxy browser with local Eruda injection.",
+  "license":"MIT",
+  "engines":{"node":">=20 <23"},
+  "scripts":{"start":"node server.js","check":"node --check server.js && node --check public/app.js && node --check public/insite.js"},
+  "dependencies":{"cheerio":"1.2.0","eruda":"3.4.3","express":"5.2.1"}
 }

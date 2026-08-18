@@ -1,65 +1,65 @@
-# InSite DevTools Proxy
+# InSite DevTools 2.0 — Bonto deployment
 
-A self-hosted Node.js development proxy that rewrites proxied HTML so Eruda and an InSite helper run inside the **same browser origin as the proxy app**. This avoids the local-file iframe same-origin problem from the earlier prototype.
+This version removes the fragile `/p/<target>` iframe architecture from the previous build.
 
-## What it includes
+## Architecture
 
-- Node.js/Express backend
-- URL navigation frontend
-- HTML/resource URL rewriting
-- Eruda 3.4.3 served locally from npm instead of a CDN
-- Eruda Console / Elements / Network / Resources / Sources / Info / Snippets
-- InSite floating DevTools shell
-- Element picker and computed-style snapshot
-- Target-page JavaScript runner
-- HTML/text viewer
-- Temporary dark-mode CSS override
-- Redirect rewriting
-- Cookie path isolation per proxied target origin
-- CSP/X-Frame-Options policy-header stripping required for the controlled proxy page
-- SSRF protections for localhost/private/reserved IPs
+The browser shell is the normal Bonto app page.
+
+1. The frontend requests `/api/page/<encoded-target>`.
+2. The server fetches the target.
+3. HTML is rewritten so resources are fetched through `/api/resource/<encoded-target>`.
+4. Eruda 3.4.3 and `insite.js` are injected into the returned HTML.
+5. The result is assigned to an iframe `srcdoc`.
+6. Because `srcdoc` is same-origin with the Bonto shell, the shell can communicate with the injected DevTools without cross-origin iframe errors.
+
+This specifically avoids making the browser navigate to `/p/...`, which was the source of the Bonto loading/route problem in the previous version.
+
+## Bonto
+
+Use a Node.js app with Node 20 or 22. Bonto provides `PORT`; `server.js` uses `process.env.PORT`.
+
+Required in production:
+
+`ACCESS_PASSWORD=<long random value>`
+
+Optionally set `ALLOWED_HOSTS=example.com,developer.mozilla.org`.
+
+Run:
+
+`npm install`
+`npm start`
+
+Health check:
+
+`/healthz`
+
+## What is included
+
+- URL navigation, back, forward, reload
+- Same-origin iframe/srcdoc browser shell
+- Server-side target fetching
+- HTML rewriting
+- CSS URL and @import rewriting
+- JS module/import rewriting for common static imports
+- Image/script/stylesheet/preload/font/resource proxying
+- Anchor navigation routed back through the shell
+- GET form navigation
+- Eruda 3.4.3 local asset
+- Console, Elements, Network, Resources, Sources, Info, Snippets
+- Element picker
+- Computed-style snapshot
+- JavaScript execution
+- HTML and text inspection
+- Dark override
+- Authentication
 - Rate limiting
-- Optional host allowlist
-- Password-protected deployment
-- Bonto-compatible `package.json` and `PORT` handling
+- SSRF protections
+- Host allowlisting
+- Size and timeout limits
 
-## Deploy on Bonto
+## Important compatibility limits
 
-Bonto supports Node.js 18/20/22, npm dependencies, environment variables, HTTPS and `process.env.PORT`. The project is intended to run as a normal Node.js app.
+Some modern applications cannot be perfectly proxied because they depend on original-origin semantics, service workers, WebAuthn, OAuth, certificate-bound authentication, signed requests, strict origin checks, or browser-level features. This project does not bypass those security mechanisms.
 
-1. Create a new **Node.js** app in Bonto.
-2. Upload this project or copy its files into the app.
-3. Set the app's Node version to **20 or 22**.
-4. Set the required environment variable:
-
-   `ACCESS_PASSWORD=<long-random-password>`
-
-5. Optionally set:
-
-   `ALLOWED_HOSTS=example.com,developer.mozilla.org`
-
-6. Deploy/start the app. Bonto will install dependencies from `package.json` and provide `PORT`.
-7. Open the assigned `https://<your-app>.bonto.run` URL and sign in.
-
-## Important limitations
-
-This is a **development proxy**, not a browser security bypass. Some applications will not work perfectly when proxied because modern web apps can depend on their original origin, complex WebAuthn/OAuth flows, service workers, signed requests, certificate-bound authentication, origin checks, or other browser security features. Do not use it as a way to defeat network or school administrator controls.
-
-The proxy intentionally blocks obvious internal/private targets. A public deployment should keep the password enabled. For a stronger security posture, also configure `ALLOWED_HOSTS`.
-
-## Local run
-
-```bash
-npm install
-ACCESS_PASSWORD='choose-a-password' npm start
-```
-
-Then open `http://localhost:3000`.
-
-## Health check
-
-`GET /healthz` returns a small JSON health response.
-
-## Updating Eruda
-
-Eruda is pinned at **3.4.3** in `package.json`. Update it deliberately and test the proxy rewrite/injection behavior after changing the version.
+It is intended for legitimate debugging of sites you are authorized to inspect.
