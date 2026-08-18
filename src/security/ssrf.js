@@ -128,7 +128,11 @@ async function validateTarget(u) {
   if (!["http:", "https:"].includes(u.protocol)) {
     throw new Error("Only HTTP and HTTPS targets are supported.");
   }
-  const host = u.hostname.toLowerCase();
+  // URL.hostname keeps IPv6 addresses wrapped in [...]. Strip the brackets before
+  // handing the string to net.isIP / dns.lookup, otherwise ::ffff:127.0.0.1 slips
+  // past the numeric-address branch and falls through to DNS.
+  let host = u.hostname.toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
   if (hostBlockedByName(host)) throw new Error("Local or internal targets are blocked.");
   if (!hostInAllowlist(host)) throw new Error("This hostname is not in ALLOWED_HOSTS.");
   const pinned = await resolveAndPin(host);
