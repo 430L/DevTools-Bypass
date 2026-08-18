@@ -1,5 +1,16 @@
 "use strict";
 
+// Loud crash guards — never leave Bonto looking at a silent-dead process. A dying
+// worker with no stderr is what turns into a Cloudflare 502 for the user.
+process.on("uncaughtException", (err) => {
+  // eslint-disable-next-line no-console
+  console.error("[InSite] uncaughtException:", err?.stack || err);
+});
+process.on("unhandledRejection", (err) => {
+  // eslint-disable-next-line no-console
+  console.error("[InSite] unhandledRejection:", err?.stack || err);
+});
+
 const http = require("node:http");
 const path = require("node:path");
 const express = require("express");
@@ -14,7 +25,15 @@ const { handleProxy } = require("./proxy/handler");
 const ws = require("./proxy/websocket");
 
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
-const ERUDA_PATH = require.resolve("eruda");
+
+// Prefer the browser UMD bundle explicitly; require.resolve("eruda") would honor `main`
+// which is stable today but not guaranteed across upgrades.
+let ERUDA_PATH;
+try {
+  ERUDA_PATH = require.resolve("eruda/eruda.js");
+} catch {
+  ERUDA_PATH = require.resolve("eruda");
+}
 
 const app = express();
 app.disable("x-powered-by");
