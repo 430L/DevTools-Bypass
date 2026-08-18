@@ -1,79 +1,220 @@
-# InSite DevTools 3.0 — Bonto deployment
+# InSite DevTools 3.0
 
-This version removes the fragile `/p/<target>` iframe architecture from the previous build.
+A same-origin development proxy that iframes any HTTP(S) page as `srcdoc`
+inside a controlled shell and injects [Eruda](https://github.com/liriliri/eruda)
+so you can inspect it end-to-end without a browser extension. Intended for
+debugging sites you are authorized to inspect.
 
 ## Architecture
 
-The browser shell is the normal Bonto app page.
+```
+Browser ──▶ InSite shell (/index.html)
+                │
+                │  fetch(/api/page/<base64url-target>)
+                ▼
+            Express router ──▶ SSRF-checked undici fetch ──▶ Target site
+                │                                                │
+                │              upstream body (streamed)          │
+                │◀───────────────────────────────────────────────┘
+                ▼
+   HTML/CSS/JS rewriter (proxies every URL back through us)
+                │
+                ▼
+        <iframe srcdoc> ── Eruda + insite.js injected
+```
 
-1. The frontend requests `/api/page/<encoded-target>`.
-2. The server fetches the target.
-3. HTML is rewritten so resources are fetched through `/api/resource/<encoded-target>`.
-4. Eruda 3.4.3 and `insite.js` are injected into the returned HTML.
-5. The result is assigned to an iframe `srcdoc`.
-6. Because `srcdoc` is same-origin with the Bonto shell, the shell can communicate with the injected DevTools without cross-origin iframe errors.
+- **`/api/page/<enc>`** returns a rewritten page; the shell assigns it to
+  `iframe.srcdoc` so the iframe is same-origin with the shell and the shell
+  can `postMessage()` DevTools commands into it.
+- **`/api/resource/<enc>`** streams any subresource (script/CSS/image/media).
+- **`/api/ws/<enc>`** proxies a WebSocket upgrade.
+- **`/auth/*`** password-gated session (random 32-byte cookie, server-side
+  store, strict rate limiting on login).
 
-This specifically avoids making the browser navigate to `/p/...`, which was the source of the Bonto loading/route problem in the previous version.
+## Repository layout
 
-## Bonto
+```
+src/
+├── server.js             HTTP + WS bootstrap, route wiring, graceful shutdown
+├── config.js             validated env module
+├── logger.js             pino with credential + cookie redaction
+├── security/
+│   ├── ssrf.js           IP normalization, private-range checks, DNS pinning
+│   ├── auth.js           sessions, timing-safe compare, cookie flags
+│   └── rate-limit.js     sliding-window limiter (per-route)
+├── proxy/
+│   ├── fetch.js          undici fetch with pinned Agent
+│   ├── headers.js        request/response header allow/deny lists
+│   ├── cookies.js        per-session per-target tough-cookie jar
+│   ├── redirects.js      3xx Location rewrite
+│   ├── websocket.js      WS upgrade proxy
+│   └── handler.js        streaming page/resource routes
+├── rewrite/
+│   ├── url.js            encode/decode + cleanTarget
+│   ├── srcset.js         paren-aware srcset splitter
+│   ├── css.js            handwritten scanner for url()/@import/image-set/…
+│   ├── js.js             AST rewrite (meriyah + magic-string) of ES modules
+│   └── html.js           exhaustive cheerio pass — meta refresh, importmap, SRI, srcdoc, …
+└── util/
+    ├── html-escape.js
+    └── streams.js        limitedTransform / collectBounded
 
-Use a Node.js app with Node 20 or 22. Bonto provides `PORT`; `server.js` uses `process.env.PORT`.
+public/
+├── index.html            a11y-labelled shell (topbar, sidebar, drawer)
+├── app.js                shell logic: navigation, history, keyboard shortcuts
+├── insite.js             injected into the srcdoc iframe
+├── styles.css            dark + light theme via prefers-color-scheme
+├── favicon.svg
+└── manifest.webmanifest
 
-Required in production:
+test/                     node:test units for every rewrite + security module
+```
 
-`ACCESS_PASSWORD=<long random value>`
+## Getting started
 
-Optionally set `ALLOWED_HOSTS=example.com,developer.mozilla.org`.
+```sh
+npm ci
+cp .env.example .env       # set ACCESS_PASSWORD to a long random string
+npm start
+```
 
-Run:
+Development watch mode:
 
-`npm install`
-`npm start`
+```sh
+npm run dev
+```
 
-Health check:
+Tests and lint:
 
-`/healthz`
+```sh
+npm test
+npm run lint
+```
 
-## What is included
+Health check: `curl http://localhost:3000/healthz`
 
-- URL navigation, back, forward, reload
-- Same-origin iframe/srcdoc browser shell
-- Server-side target fetching
-- HTML rewriting
-- CSS URL and @import rewriting
-- JS module/import rewriting for common static imports
-- Image/script/stylesheet/preload/font/resource proxying
-- Anchor navigation routed back through the shell
-- GET form navigation
-- Eruda 3.4.3 local asset
-- Console, Elements, Network, Resources, Sources, Info, Snippets
-- Element picker
-- Computed-style snapshot
-- JavaScript execution
-- HTML and text inspection
-- Dark override
-- Authentication
-- Rate limiting
-- SSRF protections
-- Host allowlisting
-- Size and timeout limits
+## Environment
 
-## Important compatibility limits
+All variables are optional in development. `ACCESS_PASSWORD` is required in
+production (the app refuses to boot without it).
 
-Some modern applications cannot be perfectly proxied because they depend on original-origin semantics, service workers, WebAuthn, OAuth, certificate-bound authentication, signed requests, strict origin checks, or browser-level features. This project does not bypass those security mechanisms.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PORT` | `3000` | HTTP port |
+| `ACCESS_PASSWORD` | *(empty in dev)* | Required in production. Long random secret. |
+| `ALLOWED_HOSTS` | *(any public host)* | Comma-separated hostname allowlist (matches subdomains). |
+| `MAX_RESPONSE_MB` | `25` | Upstream response cap; the stream is aborted mid-flight if exceeded. |
+| `MAX_REQUEST_MB` | `25` | Request-body cap for uploads through `/api/*`. |
+| `REQUEST_TIMEOUT_MS` | `20000` | Upstream fetch timeout. |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Sliding-window size on `/api/*`. |
+| `RATE_LIMIT_MAX` | `120` | Max requests per window per IP on `/api/*`. |
+| `AUTH_RATE_WINDOW_MS` | `900000` | Sliding-window size on `/auth/login`. |
+| `AUTH_RATE_MAX` | `5` | Max failed logins per window per IP. |
+| `SESSION_TTL_MS` | 7 days | How long an auth cookie is valid. |
+| `SESSION_SECRET` | *(random each boot)* | Set to survive restarts / to share across multiple instances. |
+| `TRUST_PROXY_HOPS` | `1` | Number of trusted reverse-proxy hops (for `req.ip`). |
+| `LOG_LEVEL` | `info` | pino level. |
+| `NODE_ENV` | `development` | `production` forces the auth cookie's `Secure` flag. |
 
-It is intended for legitimate debugging of sites you are authorized to inspect.
+## What changed vs 2.x
 
+- **Correctness**
+  - POST/PUT/PATCH bodies actually reach the upstream now (`express.raw` is
+    mounted on `/api/*` after `express.json` skips those paths).
+  - `Set-Cookie` from upstream is stored in a per-session per-target
+    `tough-cookie` jar so proxied sites keep their sessions across
+    navigations.
+  - Relative anchor `href`s are absolutized server-side so they no longer
+    resolve against `about:srcdoc` and 404.
+  - All 3xx redirects forward the status verbatim with a rewritten `Location`
+    header — no more inline `postMessage("*")` shim.
+  - Responses stream through a size-capped Transform instead of being fully
+    buffered; the stream is aborted mid-flight when the cap is exceeded.
+  - WebSocket upgrades are proxied through `/api/ws/<enc>`.
 
-## V3 routing fix
+- **Security**
+  - SSRF: IPv4-mapped IPv6 (`::ffff:*`) is normalized and re-checked.
+    Multicast/reserved/CGNAT ranges added. Internal TLDs
+    (`.internal`/`.local`/`.consul`/…) blocked. DNS rebinding is closed off
+    by resolving once and pinning the IP through a custom `undici.Agent`.
+  - The client's `Cookie`/`Authorization` headers are NEVER forwarded to
+    targets — target cookies come from the per-session jar instead.
+  - Session cookie is a random 32-byte value with a server-side store and
+    TTL, replacing the previous static `HMAC(pw, pw)` value.
+  - `/auth/login` uses `crypto.timingSafeEqual` and is rate-limited with a
+    5-per-15-minute per-IP cap.
+  - Response header denylist expanded to strip HSTS, HPKP, Expect-CT,
+    Clear-Site-Data, Permissions-Policy, Referrer-Policy, and friends so
+    target-page directives cannot pin/lock the proxy hostname.
+  - JSON payloads inside `<script>` are escape-sanitized against
+    `</script>`, `<!--`, and U+2028/U+2029 breakout.
+  - The `x-insite-target` echo header is gone.
 
-The previous deployment depended on Express wildcard route matching. V3 uses explicit prefix middleware:
+- **Rewriter coverage**
+  - `<meta http-equiv=refresh>` is rewritten through the proxy.
+  - `<iframe srcdoc>` is recursively rewritten.
+  - `<script type="importmap">` specifiers are rewritten.
+  - SVG `<use xlink:href>`, `<image href>`, `<object data>`, `formaction`,
+    `cite`, `usemap`, `imagesrcset` all covered.
+  - Every fetching `link[rel]` (icon, manifest, prefetch, dns-prefetch,
+    preconnect, apple-touch-icon, mask-icon, …) is proxied.
+  - CSS scanner handles quoted/unquoted `url()`, `@import url()`,
+    `image-set()`, `cursor: url()`, escapes in string values.
+  - `srcset` splitter is paren-aware — comma-bearing `data:` URIs are no
+    longer chopped in half.
+  - JS module rewrite is AST-based (meriyah + magic-string), so specifiers
+    inside comments and strings are left alone.
+  - `integrity` attributes are stripped (rewritten bodies won't match the
+    hash); `crossorigin` is normalized to `anonymous`; `<base>` is removed;
+    anchor `target=_top|_parent` is coerced to `_self`.
 
-- `/api/page/<base64url>`
-- `/api/resource/<base64url>`
+- **Frontend**
+  - Auth-first boot (no more login-modal race against the default page).
+  - AbortController timeout, bounded error text, spinner overlay.
+  - Keyboard shortcuts: `Ctrl/Cmd+L`, `Alt+←/→`, `Ctrl/Cmd+R`, `F12`.
+  - History persisted in `localStorage`, capped at 100 entries, with a
+    "Clear history" button.
+  - `insite.js` resolves relative URLs against the real target URL, handles
+    middle-click / modifier-key clicks, respects the `download` attribute,
+    lets same-origin same-pathname anchor clicks reach SPA routers, and
+    hooks `pushState`/`replaceState` to keep the shell URL bar in sync.
+  - Accessibility: labelled inputs, `aria-label` on icon buttons,
+    skip-to-content link, `:focus-visible` outlines, `prefers-reduced-motion`
+    and `prefers-color-scheme: light` support, print stylesheet.
 
-The frontend also sends the URL-safe Base64 token directly without URI-encoding it a second time.
+- **Ops**
+  - Modular tree under `src/`; no more single-file 344-liner.
+  - `pino` structured logs with cookie/authorization/URL-credential
+    redaction.
+  - Graceful `SIGTERM`/`SIGINT` shutdown.
+  - `helmet` CSP for the shell itself.
+  - CI matrix on Node 20 and 22 (`npm ci` → lint → test).
+  - Committed lockfile, `.gitignore`, `.env.example`, `LICENSE`,
+    `biome.json`, GitHub Actions workflow.
 
-The frontend root is explicitly handled before the static/404 fallback, and GET/HEAD unknown non-API paths return `public/index.html`, preventing a Bonto reverse-proxy path from displaying a backend 404 page.
+## Compatibility limits
 
-A **Health** button in the top bar calls `/healthz` so you can immediately verify that the Bonto process is running and see its Node/Eruda versions.
+The following will not work through the proxy, by design or by absence of
+browser cooperation:
+
+- WebAuthn, hardware-key attestation, certificate-bound authentication.
+- Service workers (registration is intentionally not rewritten).
+- OAuth flows that require the exact origin registered with the provider.
+- Fingerprint-strict CDN protection (Cloudflare Turnstile / Akamai / etc.).
+- Native platform features (camera, sensors) if the target relies on strict
+  Permissions-Policy — the header is stripped, so the shell's default policy
+  applies.
+
+## Development notes
+
+- The public-network smoke test needs outbound HTTPS; the sandboxed CI does
+  not have it, so the E2E tests focus on rewriter correctness and the SSRF
+  refusal path.
+- The DevTools-detection countermeasure surface is **passive**: Eruda is
+  injected, but the shell does not attempt to spoof
+  `window.top`/`outerWidth`/`console`/`Function.prototype.toString`/…
+  against target-side detectors. Adding those is a natural next step.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

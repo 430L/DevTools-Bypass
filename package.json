@@ -1,10 +1,37 @@
 {
-  "name":"insite-devtools-proxy",
-  "version":"2.0.0",
-  "private":true,
-  "description":"Same-origin development proxy browser with local Eruda injection.",
-  "license":"MIT",
-  "engines":{"node":">=20 <23"},
-  "scripts":{"start":"node server.js","check":"node --check server.js && node --check public/app.js && node --check public/insite.js"},
-  "dependencies":{"cheerio":"1.2.0","eruda":"3.4.3","express":"5.2.1"}
+  "name": "insite-devtools-proxy",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Same-origin development proxy browser with local Eruda injection.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20 <23"
+  },
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test --test-reporter=spec test/**/*.test.js",
+    "lint": "biome check src public test",
+    "format": "biome format --write src public test",
+    "check": "node --check src/server.js"
+  },
+  "dependencies": {
+    "cheerio": "1.2.0",
+    "compression": "1.8.1",
+    "eruda": "3.4.3",
+    "express": "5.2.1",
+    "helmet": "8.0.0",
+    "magic-string": "0.30.17",
+    "meriyah": "6.1.4",
+    "pino": "9.7.0",
+    "set-cookie-parser": "2.7.1",
+    "tough-cookie": "5.1.2",
+    "undici": "7.29.0",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "pino-pretty": "13.0.0"
+  }
 }
