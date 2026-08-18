@@ -1,69 +1,119 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<title>InSite DevTools</title><link rel="stylesheet" href="/styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="InSite DevTools — same-origin development proxy browser with local Eruda injection.">
+  <title>InSite DevTools</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand"><span class="logo">◈</span><span>InSite</span><span class="tag">DevTools</span></div>
-  <form id="nav" class="nav">
-    <button type="button" id="back" title="Back">←</button>
-    <button type="button" id="forward" title="Forward">→</button>
-    <button type="button" id="reload" title="Reload">↻</button>
-    <input id="url" autocomplete="off" spellcheck="false" placeholder="https://example.com">
+<a class="skip" href="#site">Skip to browser</a>
+
+<header class="topbar" role="banner">
+  <div class="brand"><span class="logo" aria-hidden="true">◈</span><span>InSite</span><span class="tag">DevTools</span></div>
+  <form id="nav" class="nav" aria-label="Navigation">
+    <button type="button" id="back" title="Back (Alt+Left)" aria-label="Back">←</button>
+    <button type="button" id="forward" title="Forward (Alt+Right)" aria-label="Forward">→</button>
+    <button type="button" id="reload" title="Reload (Ctrl/Cmd+R)" aria-label="Reload">↻</button>
+    <label class="visually-hidden" for="url">Target URL</label>
+    <input id="url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://example.com" aria-label="Target URL">
     <button class="go" type="submit">Go</button>
   </form>
-  <div class="top-actions"><button id="newTab">Open tab</button><button id="health">Health</button><button id="logout" class="hide">Log out</button></div>
+  <div class="top-actions">
+    <button id="newTab" title="Open in a new proxied tab">Open tab</button>
+    <button id="health" title="Server health">Health</button>
+    <button id="logout" class="hide" title="Log out">Log out</button>
+  </div>
 </header>
 
-<main class="workspace">
-  <section class="browser-wrap">
-    <iframe id="site" title="InSite browser"></iframe>
-    <div id="loadError" class="overlay hide"></div>
+<main class="workspace" id="main">
+  <section class="browser-wrap" aria-label="Browser">
+    <iframe id="site" title="InSite browser" name="site"></iframe>
+    <div id="spinner" class="spinner hide" role="status" aria-live="polite">
+      <div class="spin-ring" aria-hidden="true"></div><span>Loading…</span>
+    </div>
+    <div id="loadError" class="overlay hide" role="alert"></div>
   </section>
-  <aside class="side">
+  <aside class="side" aria-label="Tools">
     <div class="side-title">Target</div>
     <div id="targetCard" class="target-card"><div class="muted">No page loaded.</div></div>
     <div class="side-title">Status</div>
-    <div class="chips"><span id="proxyState" class="chip">Checking…</span><span id="erudaState" class="chip">Eruda 3.4.3</span></div>
+    <div class="chips">
+      <span id="proxyState" class="chip">Checking…</span>
+      <span id="erudaState" class="chip">Eruda 3.4.3</span>
+    </div>
     <div class="side-title">Tools</div>
     <div class="tool-grid">
-      <button data-tool="console">Console</button><button data-tool="elements">Elements</button>
-      <button data-tool="network">Network</button><button data-tool="resources">Resources</button>
-      <button data-tool="sources">Sources</button><button data-tool="info">Info</button>
+      <button data-tool="console">Console</button>
+      <button data-tool="elements">Elements</button>
+      <button data-tool="network">Network</button>
+      <button data-tool="resources">Resources</button>
+      <button data-tool="sources">Sources</button>
+      <button data-tool="info">Info</button>
     </div>
     <div class="side-title">Quick actions</div>
     <div class="stack">
-      <button id="devtools">Open DevTools</button><button id="pick">Pick Element</button>
-      <button id="dark">Dark override</button><button id="run">Run JS</button>
+      <button id="devtools">Open DevTools (F12)</button>
+      <button id="pick">Pick Element</button>
+      <button id="dark">Dark override</button>
+      <button id="run">Run JS</button>
+    </div>
+    <div class="side-title">History</div>
+    <div class="stack">
+      <button id="clearHistory" class="ghost">Clear browsing history</button>
     </div>
     <p class="disclaimer">Development proxy for sites you are authorized to inspect. Modern applications may still require their original origin.</p>
   </aside>
 </main>
 
-<button id="fab" class="fab" title="Open InSite tools">🛠</button>
+<button id="fab" class="fab" title="Open InSite tools" aria-label="Open InSite tools">🛠</button>
 
-<div id="drawer" class="drawer">
-  <div class="drawer-head"><b>InSite</b><button id="closeDrawer">×</button></div>
-  <div class="drawer-tabs">
-    <button class="active" data-tab="console">Console</button><button data-tab="element">Element</button>
-    <button data-tab="js">JavaScript</button><button data-tab="page">Page</button>
+<div id="drawer" class="drawer" role="dialog" aria-modal="false" aria-label="InSite tools">
+  <div class="drawer-head"><b>InSite</b><button id="closeDrawer" aria-label="Close drawer">×</button></div>
+  <div class="drawer-tabs" role="tablist">
+    <button class="active" data-tab="console" role="tab" aria-selected="true">Console</button>
+    <button data-tab="element" role="tab" aria-selected="false">Element</button>
+    <button data-tab="js" role="tab" aria-selected="false">JavaScript</button>
+    <button data-tab="page" role="tab" aria-selected="false">Page</button>
   </div>
-  <section id="tab-console" class="tab active"><pre id="consoleOut">Use Eruda Console for full target-page console output.</pre></section>
-  <section id="tab-element" class="tab"><div id="elementOut" class="empty">Pick an element from the page.</div></section>
-  <section id="tab-js" class="tab"><textarea id="code">document.title</textarea><button id="execute" class="go">Execute in page</button><pre id="result">No result.</pre></section>
-  <section id="tab-page" class="tab"><div class="row"><button id="html">View HTML</button><button id="text">View text</button></div><pre id="pageOut">No output.</pre></section>
+  <section id="tab-console" class="tab active" role="tabpanel">
+    <pre id="consoleOut">Use Eruda Console for full target-page console output.</pre>
+  </section>
+  <section id="tab-element" class="tab" role="tabpanel">
+    <div id="elementOut" class="empty">Pick an element from the page.</div>
+  </section>
+  <section id="tab-js" class="tab" role="tabpanel">
+    <label class="visually-hidden" for="code">JavaScript to execute</label>
+    <textarea id="code" spellcheck="false">document.title</textarea>
+    <button id="execute" class="go">Execute in page</button>
+    <pre id="result">No result.</pre>
+  </section>
+  <section id="tab-page" class="tab" role="tabpanel">
+    <div class="row"><button id="html">View HTML</button><button id="text">View text</button></div>
+    <pre id="pageOut">No output.</pre>
+  </section>
 </div>
 
-<div id="login" class="modal hide">
+<div id="login" class="modal hide" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
   <div class="modal-card">
-    <h1>InSite DevTools</h1><p>This deployment is password protected.</p>
-    <form id="loginForm"><input id="password" type="password" placeholder="Access password" autofocus><button class="go">Sign in</button></form>
-    <div id="loginError" class="error"></div><pre id="healthOut" style="display:none"></pre>
+    <h1 id="loginTitle">InSite DevTools</h1>
+    <p>This deployment is password protected.</p>
+    <form id="loginForm">
+      <label class="visually-hidden" for="password">Access password</label>
+      <input id="password" type="password" placeholder="Access password" autocomplete="current-password">
+      <button class="go" type="submit">Sign in</button>
+    </form>
+    <div id="loginError" class="error" role="alert"></div>
+    <pre id="healthOut" hidden></pre>
   </div>
 </div>
+
+<noscript><div class="modal" style="display:flex"><div class="modal-card"><h1>JavaScript required</h1><p>InSite DevTools needs JavaScript to run its browser shell.</p></div></div></noscript>
+
 <script src="/app.js"></script>
 </body>
 </html>

@@ -1,0 +1,12 @@
+{
+  "name": "InSite DevTools",
+  "short_name": "InSite",
+  "description": "Same-origin development proxy browser with Eruda injection.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "icons": [
+    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" }
+  ]
+}
