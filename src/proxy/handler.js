@@ -21,6 +21,20 @@ function extractEncoded(originalUrl, prefix) {
   return path.startsWith(prefix) ? path.slice(prefix.length) : "";
 }
 
+// Decode a text body using the charset the upstream actually declared. Doing this
+// unconditionally as UTF-8 renders every windows-1252 / iso-8859-1 / shift_jis page as
+// mojibake. Falls back to UTF-8 for unknown or unsupported labels.
+function decodeText(buf, contentType) {
+  const m = /charset\s*=\s*"?([\w-]+)"?/i.exec(contentType || "");
+  const label = (m?.[1] || "utf-8").toLowerCase();
+  if (label === "utf-8" || label === "utf8") return buf.toString("utf8");
+  try {
+    return new TextDecoder(label).decode(buf);
+  } catch {
+    return buf.toString("utf8");
+  }
+}
+
 function needsRewrite(kind, contentType, pathname) {
   const ct = contentType.toLowerCase();
   if (kind === "page" || ct.includes("text/html")) return "html";
@@ -120,14 +134,15 @@ async function handleProxy(req, res, kind) {
       } catch (err) {
         return sendUpstreamError(res, target, err);
       }
-      const text = buf.toString("utf8");
+      // Decode with the upstream's declared charset, then always re-emit as UTF-8.
+      const text = decodeText(buf, contentType);
       let out = text;
       if (rewriteMode === "html") {
         out = rewriteHtml(text, target);
-        res.type("html");
+        res.setHeader("content-type", "text/html; charset=utf-8");
       } else if (rewriteMode === "css") {
         out = rewriteCss(text, target.href);
-        res.type("css");
+        res.setHeader("content-type", "text/css; charset=utf-8");
       } else if (rewriteMode === "js") {
         try {
           out = rewriteJs(text, target.href);
@@ -138,7 +153,7 @@ async function handleProxy(req, res, kind) {
           );
           out = text;
         }
-        res.type("application/javascript");
+        res.setHeader("content-type", "application/javascript; charset=utf-8");
       }
       return res.status(upstream.status).send(out);
     }
@@ -154,6 +169,11 @@ async function handleProxy(req, res, kind) {
       logger.warn({ target: safeUrl(target), err: err?.message }, "Streaming aborted mid-response");
       res.destroy();
     }
+  } catch (err) {
+    // Anything synchronous in the block above (a cheerio parse failure, an unexpected
+    // header shape) would otherwise escape to the Express error handler and return a bare
+    // JSON 500. Route it through the friendly proxy error page instead.
+    return sendUpstreamError(res, target, err);
   } finally {
     cleanup();
   }

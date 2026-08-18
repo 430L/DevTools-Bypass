@@ -92,7 +92,13 @@ function copyResponseHeaders(upstreamHeaders, res, { forwardCache = false } = {}
     ) {
       continue;
     }
-    res.setHeader(name, value);
+    // A malformed upstream header name/value makes Node throw ERR_INVALID_HTTP_TOKEN /
+    // ERR_INVALID_CHAR. One bad header from one site must not fail the whole response.
+    try {
+      res.setHeader(name, value);
+    } catch {
+      /* skip the offending header and keep going */
+    }
   }
 }
 

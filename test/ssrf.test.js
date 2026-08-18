@@ -92,3 +92,13 @@ test("validateTarget rejects non-HTTP schemes early", async () => {
   await assert.rejects(() => validateTarget(new URL("javascript:alert(1)")), /HTTP and HTTPS/);
   await assert.rejects(() => validateTarget(new URL("data:text/plain,foo")), /HTTP and HTTPS/);
 });
+
+test("ALLOW_PRIVATE_TARGETS defaults to OFF (must never ship enabled)", () => {
+  // Guard against the test-only SSRF escape hatch leaking into a real deployment.
+  const config = require("../src/config");
+  assert.equal(
+    config.ALLOW_PRIVATE_TARGETS,
+    false,
+    "ALLOW_PRIVATE_TARGETS must be false unless explicitly set for tests",
+  );
+});

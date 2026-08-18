@@ -110,15 +110,22 @@ function hostInAllowlist(host) {
 // Resolve the target host to a set of IP addresses, block if any is private, and
 // return the list of pinned IPs to use when actually opening the socket.
 async function resolveAndPin(host) {
+  // ALLOW_PRIVATE_TARGETS exists so the integration suite can proxy a fixture on
+  // 127.0.0.1. It is off by default and config.js warns loudly whenever it is on.
+  const allowPrivate = config.ALLOW_PRIVATE_TARGETS;
   if (net.isIP(host)) {
-    if (isPrivateAddress(host)) throw new Error("Private or reserved IP targets are blocked.");
+    if (!allowPrivate && isPrivateAddress(host)) {
+      throw new Error("Private or reserved IP targets are blocked.");
+    }
     return [{ address: host, family: net.isIPv6(host) ? 6 : 4 }];
   }
   const answers = await dns.lookup(host, { all: true, verbatim: true });
   if (!answers.length) throw new Error("Hostname did not resolve.");
-  for (const a of answers) {
-    if (isPrivateAddress(a.address)) {
-      throw new Error("Hostname resolves to a private or reserved address.");
+  if (!allowPrivate) {
+    for (const a of answers) {
+      if (isPrivateAddress(a.address)) {
+        throw new Error("Hostname resolves to a private or reserved address.");
+      }
     }
   }
   return answers;
@@ -133,7 +140,9 @@ async function validateTarget(u) {
   // past the numeric-address branch and falls through to DNS.
   let host = u.hostname.toLowerCase();
   if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
-  if (hostBlockedByName(host)) throw new Error("Local or internal targets are blocked.");
+  if (!config.ALLOW_PRIVATE_TARGETS && hostBlockedByName(host)) {
+    throw new Error("Local or internal targets are blocked.");
+  }
   if (!hostInAllowlist(host)) throw new Error("This hostname is not in ALLOWED_HOSTS.");
   const pinned = await resolveAndPin(host);
   return { host, pinned };

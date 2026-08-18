@@ -1,15 +1,29 @@
 "use strict";
 
-// Loud crash guards — never leave Bonto looking at a silent-dead process. A dying
-// worker with no stderr is what turns into a Cloudflare 502 for the user.
-process.on("uncaughtException", (err) => {
-  // eslint-disable-next-line no-console
-  console.error("[InSite] uncaughtException:", err?.stack || err);
-});
-process.on("unhandledRejection", (err) => {
-  // eslint-disable-next-line no-console
-  console.error("[InSite] unhandledRejection:", err?.stack || err);
-});
+// Crash guards. The distinction between boot-phase and runtime failures matters:
+//
+//   * Before the port is bound, an uncaught error means the app can never serve anything.
+//     Exiting non-zero makes the platform restart us and surfaces a real crash in its UI.
+//     (Swallowing it produced a *clean* exit 0 with no listener, which reaches users as
+//     an unexplained Cloudflare 502.)
+//   * After we are listening, a stray rejection from one request must not take down the
+//     whole server — log it and keep serving everyone else.
+let listening = false;
+
+function onFatal(kind, err) {
+  const detail = err?.stack || String(err);
+  if (!listening) {
+    console.error(
+      `\n[InSite] FATAL during startup (${kind}):\n${detail}\n` +
+        "[InSite] The server never bound a port, so all requests will fail at the edge.\n",
+    );
+    process.exit(1);
+  }
+  console.error(`[InSite] ${kind} (server still running):`, detail);
+}
+
+process.on("uncaughtException", (err) => onFatal("uncaughtException", err));
+process.on("unhandledRejection", (err) => onFatal("unhandledRejection", err));
 
 const http = require("node:http");
 const path = require("node:path");
@@ -26,42 +40,45 @@ const ws = require("./proxy/websocket");
 
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 
-// Prefer the browser UMD bundle explicitly; require.resolve("eruda") would honor `main`
-// which is stable today but not guaranteed across upgrades.
-let ERUDA_PATH;
-try {
-  ERUDA_PATH = require.resolve("eruda/eruda.js");
-} catch {
-  ERUDA_PATH = require.resolve("eruda");
+// Prefer the browser UMD bundle explicitly; require.resolve("eruda") honors `main`, which
+// is correct today but not guaranteed across upgrades. Neither failing is worth crashing
+// over — the shell still works without the injected devtools.
+let ERUDA_PATH = null;
+for (const spec of ["eruda/eruda.js", "eruda"]) {
+  try {
+    ERUDA_PATH = require.resolve(spec);
+    break;
+  } catch {
+    /* try the next specifier */
+  }
+}
+if (!ERUDA_PATH) {
+  config.warnings.push("eruda could not be resolved — /vendor/eruda.js will return 404");
 }
 
 const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", config.TRUST_PROXY_HOPS);
 
-// Restrictive CSP for the shell only; proxied bodies bypass this because they render inside
-// a same-origin srcdoc iframe whose own CSP is stripped by the rewriter.
-app.use(
-  helmet({
-    contentSecurityPolicy: {
-      useDefaults: true,
-      directives: {
-        "default-src": ["'self'"],
-        "script-src": ["'self'", "'unsafe-inline'"],
-        "style-src": ["'self'", "'unsafe-inline'"],
-        "img-src": ["'self'", "data:", "blob:"],
-        "font-src": ["'self'", "data:"],
-        "connect-src": ["'self'"],
-        "frame-src": ["'self'"],
-        "worker-src": ["'self'", "blob:"],
-        "object-src": ["'none'"],
-        "base-uri": ["'self'"],
-      },
-    },
-    crossOriginEmbedderPolicy: false,
-    crossOriginOpenerPolicy: false,
-  }),
-);
+// Middleware that must NOT touch proxied bodies. `srcdoc` iframes inherit the embedding
+// document's CSP, so any policy set here would silently govern every proxied page — that
+// is how inline handlers, eval-based frameworks and runtime fetch() all got blocked. We
+// therefore ship no CSP at all and keep only the headers that cannot break content.
+const shellHardening = helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: false,
+  crossOriginResourcePolicy: false,
+  originAgentCluster: false,
+});
+const shellCompression = compression();
+
+function shellOnly(mw) {
+  return (req, res, next) => (req.path.startsWith("/api/") ? next() : mw(req, res, next));
+}
+
+app.use(shellOnly(shellHardening));
+app.use(shellOnly(shellCompression));
 
 // Body parsers ONLY apply outside /api/*. Proxy routes install express.raw locally so
 // arbitrary bodies (multipart, application/octet-stream, application/json) are forwarded
@@ -86,12 +103,17 @@ const authLimiter = createLimiter({
   name: "auth",
 });
 
-// Static + shell.
-app.use(compression());
 app.get("/healthz", (_req, res) =>
-  res.json({ ok: true, node: process.version, eruda: config.ERUDA_VERSION }),
+  res.json({
+    ok: true,
+    node: process.version,
+    eruda: config.ERUDA_VERSION,
+    authRequired: !!config.ACCESS_PASSWORD,
+    warnings: config.warnings.length,
+  }),
 );
 app.get("/vendor/eruda.js", (_req, res) => {
+  if (!ERUDA_PATH) return res.status(404).type("text/plain").send("eruda is not installed");
   res.type("application/javascript");
   res.setHeader("cache-control", "public, max-age=86400, immutable");
   res.sendFile(ERUDA_PATH);
@@ -141,7 +163,7 @@ app.use((req, res) => {
 
 // Central error handler — no stack trace leaks to clients. Preserves the status set by
 // well-typed errors (express.raw 413 for oversize bodies, body-parser 400s, etc.) so
-// upstream monitoring on Bonto sees the right class of failure.
+// platform monitoring sees the right class of failure.
 app.use((err, _req, res, _next) => {
   logger.error({ err: err.message, stack: err.stack }, "Unhandled error");
   if (res.headersSent) return res.destroy();
@@ -152,11 +174,35 @@ app.use((err, _req, res, _next) => {
 const server = http.createServer(app);
 ws.attach(server);
 
-server.listen(config.PORT, () => {
+server.on("error", (err) => {
+  // EADDRINUSE / EACCES arrive here, not as an exception.
+  console.error(`\n[InSite] FATAL: could not listen on port ${config.PORT}: ${err.message}\n`);
+  process.exit(1);
+});
+
+// Bind all interfaces explicitly. Omitting the host can bind IPv6-only on some container
+// platforms, leaving the app unreachable from the edge proxy for no visible reason.
+server.listen(config.PORT, "0.0.0.0", () => {
+  listening = true;
   logger.info(
-    { port: config.PORT, eruda: config.ERUDA_VERSION, node: process.version },
+    {
+      port: config.PORT,
+      eruda: config.ERUDA_VERSION,
+      node: process.version,
+      env: config.NODE_ENV,
+      authRequired: !!config.ACCESS_PASSWORD,
+    },
     "InSite listening",
   );
+  for (const message of config.warnings) logger.warn(message);
+  if (!config.ACCESS_PASSWORD && config.IS_PROD) {
+    logger.warn(
+      "==================================================================\n" +
+        "  InSite is running WITHOUT authentication.\n" +
+        "  Set ACCESS_PASSWORD in your platform's environment settings.\n" +
+        "==================================================================",
+    );
+  }
 });
 
 // Graceful shutdown so in-flight requests get a chance to finish.

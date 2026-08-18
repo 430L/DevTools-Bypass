@@ -6,6 +6,12 @@
   // origin/pathname that the server injected via __INSITE__.
   const BASE = window.__INSITE__?.target || "https://example.com/";
 
+  // The document's real location is "about:srcdoc", which has an opaque origin and
+  // meaningless pathname/search/hash. Every piece of navigation logic below must reason
+  // about the TARGET url instead, so we track it here and keep it updated as the page
+  // pushes history entries.
+  let currentUrl = BASE;
+
   const state = { picking: false, hover: null, oldOutline: "", dark: false };
   const send = (type, value = {}) => {
     try {
@@ -17,11 +23,59 @@
 
   function absolute(href) {
     try {
-      return new URL(href, BASE).href;
+      return new URL(href, currentUrl).href;
     } catch {
       return "";
     }
   }
+
+  function b64url(s) {
+    const bytes = new TextEncoder().encode(s);
+    let binary = "";
+    for (const b of bytes) binary += String.fromCharCode(b);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  // ---- WebSocket shim -------------------------------------------------------
+  // Route the target page's sockets through /api/ws/<encoded> on the shell origin.
+  // Without this the server's WebSocket proxy is unreachable and any ws:// the page
+  // opens goes direct (or fails outright inside the sandboxed frame).
+  (() => {
+    const Native = window.WebSocket;
+    if (typeof Native !== "function") return;
+
+    function proxied(url) {
+      try {
+        const abs = new URL(url, currentUrl);
+        if (abs.protocol !== "ws:" && abs.protocol !== "wss:") return url;
+        // Same-origin-as-shell URLs are already ours; leave them alone.
+        if (abs.host === location.host) return url;
+        const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+        return `${scheme}//${location.host}/api/ws/${b64url(abs.href)}`;
+      } catch {
+        return url;
+      }
+    }
+
+    function InSiteWebSocket(url, protocols) {
+      return protocols === undefined
+        ? new Native(proxied(url))
+        : new Native(proxied(url), protocols);
+    }
+    InSiteWebSocket.prototype = Native.prototype;
+    for (const k of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) {
+      try {
+        InSiteWebSocket[k] = Native[k];
+      } catch {
+        /* noop */
+      }
+    }
+    try {
+      window.WebSocket = InSiteWebSocket;
+    } catch {
+      /* frozen global — nothing we can do */
+    }
+  })();
 
   function describe(el) {
     const cs = getComputedStyle(el);
@@ -133,9 +187,11 @@
       }
 
       // Same-origin same-pathname (SPA link that only changes hash/query) → let the page
-      // handle it so client-side routers work.
+      // handle it so client-side routers work. Compare against the TARGET url: the real
+      // document location is "about:srcdoc" whose opaque origin never matches, which used
+      // to make this passthrough dead code and forced a full reload on every link.
       try {
-        const cur = new URL(location.href, BASE);
+        const cur = new URL(currentUrl);
         const dest = new URL(u);
         if (dest.origin === cur.origin && dest.pathname === cur.pathname) return;
       } catch {
@@ -155,7 +211,9 @@
       const f = e.target;
       if (!(f instanceof HTMLFormElement)) return;
       const method = (f.method || "get").toLowerCase();
-      const u = absolute(f.getAttribute("action") || location.href);
+      // An action-less form submits to its own URL — which here is the target page, not
+      // "about:srcdoc".
+      const u = absolute(f.getAttribute("action") || currentUrl);
       if (!/^https?:/i.test(u)) return;
       e.preventDefault();
       if (method === "get") {
@@ -177,23 +235,30 @@
   );
 
   // ---- SPA route detection --------------------------------------------------
-  const emitUrl = () =>
-    send("insite:urlchange", {
-      url: absolute(location.pathname + location.search + location.hash),
-    });
+  // pushState/replaceState carry the new URL as their third argument. Resolve it against
+  // the target and keep `currentUrl` authoritative — reading location.* here would only
+  // ever yield "about:srcdoc".
+  const emitUrl = (rawUrl) => {
+    if (rawUrl != null) {
+      const next = absolute(String(rawUrl));
+      if (next) currentUrl = next;
+    }
+    send("insite:urlchange", { url: currentUrl });
+  };
   const origPush = history.pushState;
   const origReplace = history.replaceState;
   history.pushState = function (...args) {
     const r = origPush.apply(this, args);
-    emitUrl();
+    emitUrl(args[2]);
     return r;
   };
   history.replaceState = function (...args) {
     const r = origReplace.apply(this, args);
-    emitUrl();
+    emitUrl(args[2]);
     return r;
   };
-  window.addEventListener("popstate", emitUrl);
+  // popstate carries no URL; just re-announce whatever we last tracked.
+  window.addEventListener("popstate", () => emitUrl());
 
   // ---- Shell → iframe messages ---------------------------------------------
   window.addEventListener("message", async (e) => {
