@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark light"><title>InSite DevTools</title><link rel="stylesheet" href="/styles.css"></head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">◈</span><span>InSite</span><span class="tag">DevTools</span></div>
+  <form id="nav" class="nav"><button type="button" id="back" title="Back">←</button><button type="button" id="forward" title="Forward">→</button><button type="button" id="reload" title="Reload">↻</button><input id="url" autocomplete="off" spellcheck="false" placeholder="https://example.com"><button class="go" type="submit">Go</button></form>
+  <div class="top-actions"><button id="newTab">Open tab</button><button id="logout" class="hide">Log out</button></div>
+</header>
+<main class="workspace">
+  <section class="browser-wrap">
+    <iframe id="site" title="Proxied site" referrerpolicy="no-referrer"></iframe>
+    <div id="loadError" class="overlay hide"></div>
+  </section>
+  <aside class="side">
+    <div class="side-title">Target</div>
+    <div id="targetCard" class="target-card"><div class="muted">No page loaded.</div></div>
+    <div class="side-title">Proxy</div>
+    <div class="chips"><span id="proxyState" class="chip">Checking…</span><span id="erudaState" class="chip">Eruda 3.4.3</span></div>
+    <div class="side-title">Tools</div>
+    <div class="tool-grid">
+      <button data-tool="console">Console</button><button data-tool="elements">Elements</button><button data-tool="network">Network</button><button data-tool="resources">Resources</button><button data-tool="sources">Sources</button><button data-tool="info">Info</button>
+    </div>
+    <div class="side-title">Quick actions</div>
+    <div class="stack">
+      <button id="devtools">Open DevTools</button><button id="pick">Pick Element</button><button id="dark">Dark override</button><button id="run">Run JS</button>
+    </div>
+    <p class="disclaimer">This app is a development proxy. Use it only for sites you are authorized to inspect. Browser/website security policies can still limit functionality.</p>
+  </aside>
+</main>
+<div id="fab" class="fab">🛠</div>
+<div id="drawer" class="drawer">
+  <div class="drawer-head"><b>InSite</b><button id="closeDrawer">×</button></div>
+  <div class="drawer-tabs"><button class="active" data-tab="console">Console</button><button data-tab="element">Element</button><button data-tab="js">JavaScript</button><button data-tab="page">Page</button></div>
+  <section id="tab-console" class="tab active"><pre id="consoleOut">No console output captured by the proxy shell. Use Eruda's Console panel for full in-page logs.</pre></section>
+  <section id="tab-element" class="tab"><div id="elementOut" class="empty">Pick an element from the page.</div></section>
+  <section id="tab-js" class="tab"><textarea id="code">document.title</textarea><button id="execute" class="go">Execute in page</button><pre id="result">No result.</pre></section>
+  <section id="tab-page" class="tab"><div class="row"><button id="html">View HTML</button><button id="text">View text</button></div><pre id="pageOut">No output.</pre></section>
+</div>
+<div id="login" class="modal"><div class="modal-card"><h1>InSite DevTools</h1><p>This deployment is password protected.</p><form id="loginForm"><input id="password" type="password" placeholder="Access password" autofocus><button class="go">Sign in</button></form><div id="loginError" class="error"></div></div></div>
+<script src="/app.js"></script>
+</body></html>
